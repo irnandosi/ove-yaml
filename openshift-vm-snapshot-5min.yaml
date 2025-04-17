@@ -1,0 +1,95 @@
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-creator
+  namespace: 00-vmguest
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snapshot-role
+  namespace: 00-vmguest
+rules:
+  - apiGroups: ["snapshot.kubevirt.io"]
+    resources: ["virtualmachinesnapshots"]
+    verbs: ["create", "delete", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snapshot-role-binding
+  namespace: 00-vmguest
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-creator
+    namespace: 00-vmguest
+roleRef:
+  kind: Role
+  name: snapshot-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-snapshot-every-5min
+  namespace: 00-vmguest
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: snapshot-creator
+          containers:
+            - name: snapshot
+              image: registry.redhat.io/openshift4/ose-cli
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  TIMESTAMP=$(date +%Y%m%d%H%M)
+                  cat <<EOF | oc apply -f -
+                  apiVersion: snapshot.kubevirt.io/v1alpha1
+                  kind: VirtualMachineSnapshot
+                  metadata:
+                    name: rhel9-tan-orangutan-36-snap-$TIMESTAMP
+                    namespace: 00-vmguest
+                  spec:
+                    source:
+                      apiGroup: kubevirt.io
+                      kind: VirtualMachine
+                      name: rhel9-tan-orangutan-36
+                  EOF
+          restartPolicy: OnFailure
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-snapshot-cleanup
+  namespace: 00-vmguest
+spec:
+  schedule: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"  # Run every 5 minutes with 2-minute offset
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: snapshot-creator
+          containers:
+            - name: cleanup
+              image: registry.redhat.io/openshift4/ose-cli
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  NOW=$(date +%s)
+                  oc get virtualmachinesnapshots.snapshot.kubevirt.io -n 00-vmguest -o json |                   jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp)"' |                   while read name timestamp; do
+                    snapshot_time=$(date -d "$timestamp" +%s)
+                    age=$(( (NOW - snapshot_time) / 60 ))  # age in minutes
+                    if [ "$age" -ge 120 ]; then  # 2 hours = 120 minutes
+                      echo "Deleting old snapshot: $name"
+                      oc delete virtualmachinesnapshot $name -n 00-vmguest
+                    fi
+                  done
+          restartPolicy: OnFailure
