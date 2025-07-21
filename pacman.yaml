@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pacman-ingress
+  namespace: pacman
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /index.html
+spec:
+  rules:
+  - host: pacman.rancher.imid.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pacman-0-1753116982
+            port:
+              number: 80
+---
+##HAPROXY##
+frontend http_front
+    bind *:80
+    mode http
+    acl host_pacman hdr(host) -i pacman.rancher.imid.local
+
+backend pacman_app
+    mode http
+    balance roundrobin
+    server rancher1 192.168.51.63:30189 check
+    server rancher2 192.168.51.64:30189 check
+    server rancher3 192.168.51.65:30189 check
+---
+##PATH-NodePort
+kubectl -n pacman patch svc pacman-0-1753116982 \
+  -p '{"spec": {"type": "NodePort"}}'
+
+---
